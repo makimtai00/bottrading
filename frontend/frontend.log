@@ -1,0 +1,28 @@
+
+> binance-scalping-bot-frontend@0.0.0 dev
+> vite
+
+
+  VITE v5.4.21  ready in 94 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: use --host to expose
+2:57:01 PM [vite] changed tsconfig file detected: /Users/taima/Documents/Test/frontend/tsconfig.json - Clearing cache and forcing full-reload to ensure TypeScript is compiled with updated config values.
+2:57:01 PM [vite] vite.config.ts changed, restarting server...
+2:57:01 PM [vite] page reload index.html
+2:57:01 PM [vite] hmr update /src/App.tsx, (!) Could not auto-determine entry point from rollupOptions or html files and there are no explicit optimizeDeps.include patterns. Skipping dependency pre-bundling.
+2:57:01 PM [vite] server restarted.
+2:57:38 PM [vite] page reload index.html
+2:58:04 PM [vite] page reload index.html
+2:59:03 PM [vite] page reload index.html
+c/main.tsx
+2:57:01 PM [vite] page reload tailwind.config.js
+(!) Could not auto-determine entry point from rollupOptions or html files and there are no explicit optimizeDeps.include patterns. Skipping dependency pre-bundling.
+2:57:01 PM [vite] server restarted.
+2:57:38 PM [vite] page reload index.html
+2:58:04 PM [vite] page reload index.html
+2:59:03 PM [vite] page reload index.html
+3:05:32 PM [vite] ✨ new dependencies optimized: react/jsx-dev-runtime, react, react-dom/client, lucide-react, lightweight-charts
+3:05:32 PM [vite] ✨ optimized dependencies changed. reloading
+4:17:09 PM [vite] page reload src/components/OrderPanel.tsx
+4:35:58 PM [vite] page reload src/components/OrderPanel.tsx

@@ -15,6 +15,15 @@ interface TradeSetup {
     estimated_win_rate: number
 }
 
+interface SMCState {
+    bos_bullish: boolean
+    bos_bearish: boolean
+    fvg_bullish: boolean
+    fvg_bearish: boolean
+    in_ob_bullish: boolean
+    in_ob_bearish: boolean
+}
+
 interface MLData {
     timestamp: number
     symbol: string
@@ -23,6 +32,7 @@ interface MLData {
     best_strategy: string
     trade_setup: TradeSetup
     all_predictions: Prediction[]
+    smc_state?: SMCState
 }
 
 interface Props {
@@ -82,6 +92,33 @@ export default function StrategyPanel({ symbol, interval }: Props) {
                                 {data.btc_global_trend || 'Analyzing...'}
                             </span>
                         </div>
+
+                        {/* SMC State Indicators */}
+                        {data.smc_state && (
+                            <div className="bg-dark-900 border border-dark-700 rounded-lg p-3 flex flex-col gap-2">
+                                <span className="text-sm font-medium text-gray-400 mb-1 border-b border-dark-700 pb-1">Smart Money Concepts</span>
+                                <div className="grid grid-cols-2 gap-2 text-xs">
+                                    <div className="flex justify-between items-center bg-dark-800 p-2 rounded border border-dark-700/50">
+                                        <span className="text-gray-500">Structure</span>
+                                        <span className={`font-semibold ${data.smc_state.bos_bullish ? 'text-brand-green' : data.smc_state.bos_bearish ? 'text-brand-red' : 'text-gray-500'}`}>
+                                            {data.smc_state.bos_bullish ? 'BOS Bullish' : data.smc_state.bos_bearish ? 'BOS Bearish' : 'Sideway'}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between items-center bg-dark-800 p-2 rounded border border-dark-700/50">
+                                        <span className="text-gray-500">Imbalance</span>
+                                        <span className={`font-semibold ${data.smc_state.fvg_bullish ? 'text-brand-green' : data.smc_state.fvg_bearish ? 'text-brand-red' : 'text-gray-500'}`}>
+                                            {data.smc_state.fvg_bullish ? 'Bullish FVG' : data.smc_state.fvg_bearish ? 'Bearish FVG' : 'Balanced'}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between items-center bg-dark-800 p-2 rounded border border-dark-700/50 col-span-2">
+                                        <span className="text-gray-500">Order Block Mitigation</span>
+                                        <span className={`font-semibold px-2 py-0.5 rounded ${data.smc_state.in_ob_bullish ? 'bg-brand-green/20 text-brand-green' : data.smc_state.in_ob_bearish ? 'bg-brand-red/20 text-brand-red' : 'text-gray-500'}`}>
+                                            {data.smc_state.in_ob_bullish ? 'In Demand OB (Discount)' : data.smc_state.in_ob_bearish ? 'In Supply OB (Premium)' : 'None'}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
 
                         <div className="bg-dark-900 border border-brand-green/30 rounded-lg p-4 flex flex-col gap-1 items-center justify-center relative overflow-hidden">
                             <div className="absolute top-0 right-0 w-16 h-16 bg-brand-green/10 rounded-full blur-2xl"></div>

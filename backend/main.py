@@ -48,16 +48,17 @@ async def startup_event():
     # Khởi động việc theo dõi Binance stream
     
     async def process_websocket_message(message: dict):
-        # Broadcast cho UI
-        await manager.broadcast(message)
-        
         # Gọi OrderManager check TP/SL và Khớp lệnh Pending liên tục theo luồng giá Live
+        symbol = message.get("symbol")
+        current_close = float(message.get("close", 0))
+        
+        if symbol and current_close > 0:
+            order_manager.check_pending_orders(symbol, current_close)
+            order_manager.check_orders(symbol, current_close)
+
+        # Broadcast cho UI (Chỉ gửi kline để tránh làm nặng frontend với toàn bộ ticker)
         if message.get("type") == "kline":
-            symbol = message.get("symbol")
-            current_close = float(message.get("close", 0))
-            if symbol and current_close > 0:
-                order_manager.check_pending_orders(symbol, current_close)
-                order_manager.check_orders(symbol, current_close)
+            await manager.broadcast(message)
 
     asyncio.create_task(binance_client.start_streams(process_websocket_message))
     
@@ -71,13 +72,10 @@ async def startup_event():
 async def auto_trade_worker():
     """Bot tự động quét 32 đồng coin mỗi 5 phút (300s). Nếu WinRate >= 70% thì tự mở lệnh Pending"""
     print("[AUTO-WORKER] Bắt đầu luồng kiểm tra điểm vào lệnh Tự Động (Limit)...")
-    symbols = [
-        "PNUTUSDT", "MANAUSDT", "KAITOUSDT", "NEARUSDT", "GMTUSDT", "TONUSDT", "GOATUSDT",
-        "PONKEUSDT", "SAFEUSDT", "AVAUSDT", "TOKENUSDT", "MOCAUSDT", "PEOPLEUSDT", "SOLUSDT",
-        "SUIUSDT", "DOGEUSDT", "ENAUSDT", "MOVEUSDT", "ADAUSDT", "TURBOUSDT", "NEIROUSDT",
-        "AVAXUSDT", "DOTUSDT", "XRPUSDT", "NEIROETHUSDT", "LINKUSDT", "XLMUSDT", "ZECUSDT",
-        "ATOMUSDT", "BATUSDT", "NEOUSDT", "QTUMUSDT", "BTCUSDT", "ETHUSDT"
-    ]
+    # Lấy toàn bộ danh sách Coin Future đang Active trên Binance
+    print("[AUTO-WORKER] Đang tải danh sách USDT Futures từ Binance...")
+    symbols = binance_client.get_usdt_futures_symbols()
+    print(f"[AUTO-WORKER] Đã nạp {len(symbols)} đồng coin vào danh sách theo dõi.")
     
     while True:
         if not ml_predictor.model_ready:
@@ -114,6 +112,17 @@ async def auto_trade_worker():
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "Binance Futures Scalping API is running"}
+
+@app.get("/api/v1/symbols")
+def get_symbols():
+    """
+    Trả về danh sách tất cả các cặp tỷ giá Futures giao dịch bằng USDT
+    """
+    try:
+        symbols = binance_client.get_usdt_futures_symbols()
+        return {"data": symbols}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/api/v1/klines/{symbol}")
 def get_historical_klines(symbol: str, interval: str = "1m", limit: int = 500):

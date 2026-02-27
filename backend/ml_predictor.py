@@ -14,8 +14,7 @@ class MLPredictor:
     
     def __init__(self):
         self.model_ready = False
-        self.model = None
-        self.strategies = ["RSI_Oversold", "MACD_Crossover", "Bollinger_Breakout", "EMA_Trend", "H1_M5_EMA_Pullback"]
+        self.strategies = ["SMC_Liquidity_Sweep", "RSI_Oversold", "Bollinger_Breakout", "EMA_Trend", "H1_M5_EMA_Pullback"]
         
     def initialize_model(self):
         """
@@ -82,17 +81,42 @@ class MLPredictor:
             klines = binance_client.get_historical_klines(symbol, interval=interval, limit=50)
             df = pd.DataFrame(klines)
             
-            # --- TÍNH NĂNG CHIẾN THUẬT CŨ ---
-            df['rsi'] = strategy_manager.calculate_rsi(df['close'])
-            df['ema_9'] = df['close'].ewm(span=9, adjust=False).mean()
-            df['ema_21_old'] = df['close'].ewm(span=21, adjust=False).mean()
-            df['ema_cross_signal'] = np.where(df['ema_9'] > df['ema_21_old'], 1, -1)
+            # --- TÍNH NĂNG CHIẾN THUẬT (SMC & INDICATORS) ---
+            # RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['rsi'] = 100 - (100 / (1 + rs))
             
-            ema_12 = df['close'].ewm(span=12, adjust=False).mean()
-            ema_26 = df['close'].ewm(span=26, adjust=False).mean()
-            macd_line = ema_12 - ema_26
-            macd_signal = macd_line.ewm(span=9, adjust=False).mean()
-            df['macd_hist'] = macd_line - macd_signal
+            # Khảo sát Pivot High / Pivot Low
+            df['pivot_high'] = df['high'].rolling(window=5, center=True).max() == df['high']
+            df['pivot_low'] = df['low'].rolling(window=5, center=True).min() == df['low']
+            df['last_swing_high'] = df['high'].where(df['pivot_high']).ffill()
+            df['last_swing_low'] = df['low'].where(df['pivot_low']).ffill()
+            
+            # Cấu trúc BOS
+            df['bos_bullish'] = np.where((df['close'] > df['last_swing_high'].shift(1)) & (df['last_swing_high'].shift(1) > 0), 1, 0)
+            df['bos_bearish'] = np.where((df['close'] < df['last_swing_low'].shift(1)) & (df['last_swing_low'].shift(1) > 0), 1, 0)
+            
+            # FVG (Imbalance)
+            df['fvg_bullish'] = np.where(df['low'] > df['high'].shift(2), 1, 0)
+            df['fvg_bearish'] = np.where(df['high'] < df['low'].shift(2), 1, 0)
+            
+            # Order Blocks
+            df['ob_bullish_high'] = np.where(df['fvg_bullish'] == 1, df['high'].shift(2), np.nan)
+            df['ob_bullish_low'] = np.where(df['fvg_bullish'] == 1, df['low'].shift(2), np.nan)
+            df['ob_bullish_high'] = df['ob_bullish_high'].ffill()
+            df['ob_bullish_low'] = df['ob_bullish_low'].ffill()
+            
+            df['ob_bearish_high'] = np.where(df['fvg_bearish'] == 1, df['high'].shift(2), np.nan)
+            df['ob_bearish_low'] = np.where(df['fvg_bearish'] == 1, df['low'].shift(2), np.nan)
+            df['ob_bearish_high'] = df['ob_bearish_high'].ffill()
+            df['ob_bearish_low'] = df['ob_bearish_low'].ffill()
+            
+            # Xét xem nến hiện hành có nằm trong vùng OB không (Mitigation)
+            df['in_ob_bullish'] = np.where((df['low'] <= df['ob_bullish_high']) & (df['close'] >= df['ob_bullish_low']), 1, 0)
+            df['in_ob_bearish'] = np.where((df['high'] >= df['ob_bearish_low']) & (df['close'] <= df['ob_bearish_high']), 1, 0)
             
             # Tính ATR
             high_low = df['high'] - df['low']
@@ -116,11 +140,9 @@ class MLPredictor:
             current_price = float(current_data['close'])
             current_atr = float(current_data['atr'])
             
-            # Cấu trúc feature dataframe (12 cols) đồng bộ hoàn toàn với pipeline
+            # Cấu trúc feature dataframe đồng bộ hoàn toàn với data pipeline (SMC + Indicator)
             features = pd.DataFrame([{
                'rsi': float(current_data['rsi']),
-               'ema_cross_signal': float(current_data['ema_cross_signal']),
-               'macd_hist': float(current_data['macd_hist']),
                'atr': float(current_atr),
                'btc_uptrend': float(btc_uptrend_val),
                'btc_downtrend': float(btc_downtrend_val),
@@ -128,8 +150,12 @@ class MLPredictor:
                'h1_downtrend': float(h1_downtrend_val),
                'm5_uptrend': float(current_data['m5_uptrend']),
                'm5_downtrend': float(current_data['m5_downtrend']),
-               'signal_long': float(current_data['signal_long']),
-               'signal_short': float(current_data['signal_short'])
+               'bos_bullish': float(current_data['bos_bullish']),
+               'bos_bearish': float(current_data['bos_bearish']),
+               'fvg_bullish': float(current_data['fvg_bullish']),
+               'fvg_bearish': float(current_data['fvg_bearish']),
+               'in_ob_bullish': float(current_data['in_ob_bullish']),
+               'in_ob_bearish': float(current_data['in_ob_bearish'])
             }])
             
             # Model Predict Probabilities (Multi-class: 0=Loss, 1=LongWin, 2=ShortWin)
@@ -168,22 +194,29 @@ class MLPredictor:
                 display_win_rate = 0.0 # Ép về 0 để Auto Worker phớt lờ hoàn toàn
             
             
+            # Với đòn bẩy x20, để đạt 30% lợi nhuận/rủi ro thì giá trị thực tế của token cần chạy 1.5% (30% / 20)
+            target_pct = 30.0 / 100.0  # 30% 
+            leverage = 20.0
+            actual_price_movement_pct = target_pct / leverage # 0.015 (1.5%)
+            
             if is_long:
                 # LONG: AI đoán rớt về sát EMA 8 M5 thì mới vô (Mua rẻ)
                 entry_predict = float(current_data['ema_8']) 
                 if entry_predict >= current_price: # Đảm bảo Limit dính nếu giá đã thấp hơn EMA
                      entry_predict = current_price - (current_atr * 0.2)
                      
-                sl_price = entry_predict - (current_atr * 1.5)
-                tp_price = entry_predict + (entry_predict - sl_price) * 1.5
+                price_movement = entry_predict * actual_price_movement_pct
+                sl_price = entry_predict - price_movement
+                tp_price = entry_predict + price_movement
             else:
                 # SHORT: AI đoán vòng lên test EMA 8 M5 thì mới Sọc (Bán mắc)
                 entry_predict = float(current_data['ema_8'])
                 if entry_predict <= current_price:
                      entry_predict = current_price + (current_atr * 0.2)
                      
-                sl_price = entry_predict + (current_atr * 1.5)
-                tp_price = entry_predict - (sl_price - entry_predict) * 1.5
+                price_movement = entry_predict * actual_price_movement_pct
+                sl_price = entry_predict + price_movement
+                tp_price = entry_predict - price_movement
                 
             trade_setup = {
                 "direction": "LONG (Mua)" if is_long else "SHORT (Bán)",
@@ -215,7 +248,15 @@ class MLPredictor:
                 "btc_global_trend": btc_trend,
                 "best_strategy": predictions[0]["strategy"],
                 "trade_setup": trade_setup,
-                "all_predictions": predictions
+                "all_predictions": predictions,
+                "smc_state": {
+                    "bos_bullish": bool(current_data.get('bos_bullish', 0)),
+                    "bos_bearish": bool(current_data.get('bos_bearish', 0)),
+                    "fvg_bullish": bool(current_data.get('fvg_bullish', 0)),
+                    "fvg_bearish": bool(current_data.get('fvg_bearish', 0)),
+                    "in_ob_bullish": bool(current_data.get('in_ob_bullish', 0)),
+                    "in_ob_bearish": bool(current_data.get('in_ob_bearish', 0))
+                }
             }
             
         except Exception as e:

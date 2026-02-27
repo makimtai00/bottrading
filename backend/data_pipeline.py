@@ -11,13 +11,9 @@ from sklearn.metrics import accuracy_score, classification_report
 
 class DataPipeline:
     def __init__(self):
-        self.symbols = [
-            "PNUTUSDT", "MANAUSDT", "KAITOUSDT", "NEARUSDT", "GMTUSDT", "TONUSDT", "GOATUSDT",
-            "PONKEUSDT", "SAFEUSDT", "AVAUSDT", "TOKENUSDT", "MOCAUSDT", "PEOPLEUSDT", "SOLUSDT",
-            "SUIUSDT", "DOGEUSDT", "ENAUSDT", "MOVEUSDT", "ADAUSDT", "TURBOUSDT", "NEIROUSDT",
-            "AVAXUSDT", "DOTUSDT", "XRPUSDT", "NEIROETHUSDT", "LINKUSDT", "XLMUSDT", "ZECUSDT",
-            "ATOMUSDT", "BATUSDT", "NEOUSDT", "QTUMUSDT"
-        ]
+        # Gọi API lôi hết tất cả các Coin Future đang active trên sàn thay vì fix cứng 32 dự án
+        print("Đang tải danh sách USDT Futures từ Binance...")
+        self.symbols = binance_client.get_usdt_futures_symbols()
         self.intervals = ["5m"] # Pullback Strategy này tập trung đánh scalping 5m
         self.limit = 1000 # Số lượng nến thu thập để train
         
@@ -69,26 +65,66 @@ class DataPipeline:
             df['btc_downtrend'] = 0
 
         def calculate_indicators(group):
-            group = group.sort_values('time')
+            # Lưu ý: Sắp xếp theo time để tính toán rolling window chính xác
+            group = group.sort_values('time').copy()
             
-            # --- CHIẾN THUẬT CŨ ---
-            # RSI
-            group['rsi'] = strategy_manager.calculate_rsi(group['close'])
+            # Tính RSI
+            delta = group['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            group['rsi'] = 100 - (100 / (1 + rs))
             
-            # EMA Cross Cũ
-            group['ema_9'] = group['close'].ewm(span=9, adjust=False).mean()
-            group['ema_21_old'] = group['close'].ewm(span=21, adjust=False).mean()
-            group['ema_cross_signal'] = np.where(group['ema_9'] > group['ema_21_old'], 1, -1)
+            # --- START SMART MONEY CONCEPTS (SMC) ---
             
-            # MACD
-            ema_12 = group['close'].ewm(span=12, adjust=False).mean()
-            ema_26 = group['close'].ewm(span=26, adjust=False).mean()
-            macd_line = ema_12 - ema_26
-            macd_signal = macd_line.ewm(span=9, adjust=False).mean()
-            group['macd_hist'] = macd_line - macd_signal
+            # 1. Xác định Pivot High / Pivot Low (Swing Points)
+            # Khảo sát nến ở giữa có cao nhất/thấp nhất trong 5 nến lân cận (2 trái, 2 phải) không
+            group['pivot_high'] = group['high'].rolling(window=5, center=True).max() == group['high']
+            group['pivot_low'] = group['low'].rolling(window=5, center=True).min() == group['low']
             
-            # --- CHIẾN THUẬT MỚI ---
-            # Tính M5 EMAs
+            # Tạo các cột lưu giá trị Pivot High/Low gần nhất
+            group['last_swing_high'] = group['high'].where(group['pivot_high']).ffill()
+            group['last_swing_low'] = group['low'].where(group['pivot_low']).ffill()
+            
+            # 2. Xác định cấu trúc (BOS - Break of Structure)
+            # BOS Bullish: Nến đóng cửa vượt qua Swing High gần nhất trước đó
+            # shift(1) để lấy swing high gần nhất không tính râu nến vừa hình thành
+            group['bos_bullish'] = np.where((group['close'] > group['last_swing_high'].shift(1)) & (group['last_swing_high'].shift(1) > 0), 1, 0)
+            
+            # BOS Bearish: Nến đóng cửa phá vỡ xuống dưới Swing Low gần nhất trước đó
+            group['bos_bearish'] = np.where((group['close'] < group['last_swing_low'].shift(1)) & (group['last_swing_low'].shift(1) > 0), 1, 0)
+            
+            # 3. Tính Imbalance (Fair Value Gap - FVG)
+            # Bullish FVG: Low của nến hiện tại > High của nến trước đó 2 phần 
+            # (Khoảng trống giữa râu nến 1 và 3 trong cụm 3 nến)
+            group['fvg_bullish'] = np.where(group['low'] > group['high'].shift(2), 1, 0)
+            
+            # Bearish FVG: High của nến hiện tại < Low của nến trước đó 2 phần
+            group['fvg_bearish'] = np.where(group['high'] < group['low'].shift(2), 1, 0)
+            
+            # 4. Xác định Order Block (Khá phức tạp để code hoàn chỉnh, mình dùng tiệm cận)
+            # OB Bullish: Nến Đỏ cuối cùng trước một nhịp đẩy xanh mạnh có Imbalance
+            group['is_red_candle'] = group['close'] < group['open']
+            group['is_green_candle'] = group['close'] > group['open']
+            
+            # Nếu cụm 3 nến có FVG Bullish, lấy râu nến của nến thứ nhất (shift 2) làm Order Block Bullish
+            group['ob_bullish_high'] = np.where(group['fvg_bullish'] == 1, group['high'].shift(2), np.nan)
+            group['ob_bullish_low'] = np.where(group['fvg_bullish'] == 1, group['low'].shift(2), np.nan)
+            group['ob_bullish_high'] = group['ob_bullish_high'].ffill()
+            group['ob_bullish_low'] = group['ob_bullish_low'].ffill()
+            
+            group['ob_bearish_high'] = np.where(group['fvg_bearish'] == 1, group['high'].shift(2), np.nan)
+            group['ob_bearish_low'] = np.where(group['fvg_bearish'] == 1, group['low'].shift(2), np.nan)
+            group['ob_bearish_high'] = group['ob_bearish_high'].ffill()
+            group['ob_bearish_low'] = group['ob_bearish_low'].ffill()
+            
+            # 5. Phân tích giá hiện tại có đang nằm trong OB (Mitigation / test lại vùng Cầu)
+            group['in_ob_bullish'] = np.where((group['low'] <= group['ob_bullish_high']) & (group['close'] >= group['ob_bullish_low']), 1, 0)
+            group['in_ob_bearish'] = np.where((group['high'] >= group['ob_bearish_low']) & (group['close'] <= group['ob_bearish_high']), 1, 0)
+            
+            # --- END SMART MONEY CONCEPTS ---
+            
+            # EMA Trend (Giữ nguyên dùng làm confluence)
             group['ema_8'] = group['close'].ewm(span=8, adjust=False).mean()
             group['ema_13'] = group['close'].ewm(span=13, adjust=False).mean()
             group['ema_21'] = group['close'].ewm(span=21, adjust=False).mean()
@@ -214,13 +250,15 @@ class DataPipeline:
         
         # Bỏ đi giá trị NaNs ở khúc đầu (do rolling/EMA) và đuôi (do labeling tương lai)
         clean_df = labeled_data.dropna()
-        # Tập hợp the Full Features cho ML. Bao gồm tất cả indicator vừa xây.
+        # Tập hợp the Full Features cho ML. Đã tháo bỏ MACD và thêm SMC.
         features = [
-            'rsi', 'ema_cross_signal', 'macd_hist', 'atr', # Cũ
+            'rsi', 'atr', # Cũ
             'btc_uptrend', 'btc_downtrend', # Mới
             'h1_uptrend', 'h1_downtrend',
             'm5_uptrend', 'm5_downtrend',
-            'signal_long', 'signal_short'
+            'bos_bullish', 'bos_bearish', # SMC 
+            'fvg_bullish', 'fvg_bearish',
+            'in_ob_bullish', 'in_ob_bearish'
         ]
         
         # Chỉ giữ lại các hàng có đủ tín hiệu (tranh nhiễu do thời điểm ban đầu EMA chưa kịp warm-up)

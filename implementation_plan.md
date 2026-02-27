@@ -164,3 +164,36 @@ Python là ngôn ngữ tiêu chuẩn và mạnh mẽ nhất cho Machine Learning
    - Bot sẽ tự động quyết định LONG nếu `Prob_Long >= 70%`, SHORT nếu `Prob_Short >= 70%`. Nếu rớt vào cửa LOSS (0) quá cao thì hủy lệnh.
 4. **Kiểm thử (Verification):**
    - Đã cho Auto Worker chạy liên tục ở Background và kiểm tra log. Các Probabilities trả về chuẩn 3 biến. Auto-open Limit Order (PENDING) khi tỷ lệ thắng >= 70%. Mọi thứ hoạt động hoàn hảo!
+
+---
+
+# Giai đoạn Mở rộng 4: Tích hợp thuật toán SMC (Smart Money Concepts) vào AI [✅ Đã hoàn thành]
+
+> [!NOTE]
+> **Mục tiêu:** Nâng cấp hệ thống Data Pipeline để AI học được hành vi giá (Price Action) và Cấu trúc dòng tiền (SMC).
+> **QUAN TRỌNG:** Loại bỏ chỉ báo MACD ra khỏi hệ thống để giảm tải độ nhiễu và tránh làm Bot đưa ra quyết định quá bảo thủ (khó có lệnh).
+
+## Logic Tương tác giữa SMC và Các Chỉ báo cũ
+Phần SMC sẽ **không thay thế** mà sẽ **bổ sung (chạy song song)** với các chỉ báo cũ (RSI, Bollinger Bands, Pullback EMA). MACD đã bị loại bỏ.
+- Lấy ví dụ: Mặc dù RSI tạo ra tín hiệu nhiễu, nhưng nếu chúng đặt trong bối cảnh giá vừa "Quét thanh khoản (Liquidity Sweep)" của SMC và chạm vào "Order Block (OB)", mô hình Decision Tree (Random Forest) của AI sẽ tự động học được rằng: **Sự kết hợp giữa SMC + RSI Quá bán là tín hiệu có xác suất Win > 85%**.
+- Việc thêm Features SMC giúp AI tập trung vào Cấu trúc giá, kết hợp với các Confirm từ EMA và RSI.
+
+## Chi tiết Triển khai (Đã xong):
+
+1. Nâng cấp `backend/data_pipeline.py`:
+   - Lập trình thuật toán dò Swing High / Swing Low (Pivot Points) trong 5 nến lân cận.
+   - Thêm logic Break of Structure (BOS) để xác nhận xu hướng tiếp diễn.
+   - Thêm logic xác định Fair Value Gap (FVG / Imbalance).
+   - Thêm thuật toán định nghĩa Order Block (OB Bullish / OB Bearish) sơ bộ dựa vào FVG.
+   - Mở rộng thêm Feature Array (từ 12 tính năng lên 16 tính năng) và **loại bỏ MACD**.
+
+2. Nâng cấp `backend/ml_predictor.py`:
+   - Phản chiếu lại chính xác các Logic Toán học tính toán BOS, FVG, OB từ `data_pipeline.py` sang inference data-stream thời gian thực.
+   - Xóa bỏ **MACD_Crossover** khỏi danh sách chiến thuật theo dõi và thay bằng `SMC_Liquidity_Sweep`.
+   - Update Format Output API kết trả về thêm Object: `smc_state` để đẩy xuống Frontend.
+
+3. Khởi chạy lại Train Random Forest Model V3 (Multi-class + SMC):
+   - Đã fetch lại dữ liệu 50 đồng coin Futures mới nhất và Train thành công file `rf_scalping_model.pkl` phiên bản mới học được đặc tính SMC.
+
+4. Nâng cấp Frontend `frontend/src/components/StrategyPanel.tsx`:
+   - Lắng nghe và hiển thị Block `Smart Money Concepts` trong UI với các trạng thái live: Structure, Imbalance, và Order Block Mitigation.
